@@ -1,0 +1,43 @@
+# Local database (created on server via volume)
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Compiled binaries
+bin/
+*.exe
+*.exe~
+
+# Test files
+*_test.go
+coverage.txt
+coverage.out
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+.env
+.env.*
+
+# Documentation
+README.md
+*.md
+
+# Temporary files
+tmp/
+temp/

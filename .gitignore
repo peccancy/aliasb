@@ -1,0 +1,9 @@
+.idea
+.vscode
+.env
+private.pem
+**/.terraform/*
+/coverage/coverage.out
+
+/volume
+/app
