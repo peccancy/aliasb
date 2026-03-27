@@ -14,16 +14,18 @@ import (
 	"github.com/peccancy/aliasb/internal/hub"
 	"github.com/peccancy/aliasb/internal/response"
 	"github.com/peccancy/aliasb/internal/service"
+	"github.com/peccancy/aliasb/internal/stats"
 )
 
 type RoomHandler struct {
 	rooms *service.RoomService
 	hub   *hub.Hub
+	stats *stats.Store
 	log   zerolog.Logger
 }
 
-func NewRoomHandler(rooms *service.RoomService, h *hub.Hub, log zerolog.Logger) *RoomHandler {
-	return &RoomHandler{rooms: rooms, hub: h, log: log}
+func NewRoomHandler(rooms *service.RoomService, h *hub.Hub, s *stats.Store, log zerolog.Logger) *RoomHandler {
+	return &RoomHandler{rooms: rooms, hub: h, stats: s, log: log}
 }
 
 func (h *RoomHandler) CreateRoom(w http.ResponseWriter, r *http.Request) {
@@ -79,6 +81,14 @@ func (h *RoomHandler) StartGame(w http.ResponseWriter, r *http.Request) {
 	// Stop betting on the dispute if one was created for this room
 	if room.DisputeID != "" {
 		go h.rooms.StopDisputeBetting(context.Background(), room.DisputeID)
+	}
+
+	if h.stats != nil {
+		go func() {
+			if err := h.stats.RecordGameStarted(context.Background(), room.ID, room.DisputeID != ""); err != nil {
+				h.log.Error().Err(err).Str("room_id", room.ID).Msg("failed to record game started")
+			}
+		}()
 	}
 
 	// Broadcast game start to all WS clients

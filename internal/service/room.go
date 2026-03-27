@@ -21,12 +21,12 @@ type RoomService struct {
 	wordsSvc      *words.Service
 	partnerClient *connection.PartnerClient
 	partnerID     string
-	partnerToken  string
+	partnerSecret  string
 	log           zerolog.Logger
 }
 
-func NewRoomService(store *store.RoomStore, wordsSvc *words.Service, partnerClient *connection.PartnerClient, partnerID, partnerToken string, log zerolog.Logger) *RoomService {
-	return &RoomService{store: store, wordsSvc: wordsSvc, partnerClient: partnerClient, partnerID: partnerID, partnerToken: partnerToken, log: log}
+func NewRoomService(store *store.RoomStore, wordsSvc *words.Service, partnerClient *connection.PartnerClient, partnerID, partnerSecret string, log zerolog.Logger) *RoomService {
+	return &RoomService{store: store, wordsSvc: wordsSvc, partnerClient: partnerClient, partnerID: partnerID, partnerSecret: partnerSecret, log: log}
 }
 
 func (s *RoomService) CreateRoom(ctx context.Context, d dto.CreateRoomDTO) (*model.Room, string, error) {
@@ -76,7 +76,7 @@ func (s *RoomService) CreateRoom(ctx context.Context, d dto.CreateRoomDTO) (*mod
 		}
 		now := time.Now()
 		s.log.Info().Str("partner_id", s.partnerID).Msg("creating dispute")
-		disputeID, err := s.partnerClient.CreateDispute(ctx, s.partnerToken, s.partnerID, connection.CreateDisputeRequest{
+		disputeID, err := s.partnerClient.CreateDispute(ctx, s.partnerID, s.partnerSecret, connection.CreateDisputeRequest{
 			Description: "Bet on the winning team",
 			MinBet:      1,
 			MaxBet:      1000,
@@ -273,6 +273,7 @@ func (s *RoomService) createRound(ctx context.Context, room *model.Room) (*model
 		CurrentWordIndex: 0,
 		Correct:          []string{},
 		Skipped:          []string{},
+		StartedAt:        time.Now(),
 		Duration:         room.Settings.RoundDuration,
 		Task:             task,
 	}, nil
@@ -291,7 +292,7 @@ func (s *RoomService) StopDisputeBetting(ctx context.Context, disputeID string) 
 	if s.partnerClient == nil || disputeID == "" {
 		return
 	}
-	if err := s.partnerClient.SetGameInProgress(ctx, s.partnerToken, s.partnerID, disputeID); err != nil {
+	if err := s.partnerClient.SetGameInProgress(ctx, s.partnerID, s.partnerSecret, disputeID); err != nil {
 		s.log.Error().Err(err).Str("dispute_id", disputeID).Msg("failed to set dispute game_in_progress")
 	}
 }
@@ -305,7 +306,7 @@ func (s *RoomService) SetDisputeWinner(ctx context.Context, room *model.Room) {
 	if winner == nil {
 		return
 	}
-	if err := s.partnerClient.SetDisputeWinner(ctx, s.partnerToken, s.partnerID, room.DisputeID, winner.Name); err != nil {
+	if err := s.partnerClient.SetDisputeWinner(ctx, s.partnerID, s.partnerSecret, room.DisputeID, winner.Name); err != nil {
 		s.log.Error().Err(err).Str("dispute_id", room.DisputeID).Str("winner", winner.Name).Msg("failed to set dispute winner")
 	}
 }

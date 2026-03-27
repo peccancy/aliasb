@@ -13,12 +13,15 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
+	"go.mongodb.org/mongo-driver/mongo"
+	mongoopts "go.mongodb.org/mongo-driver/mongo/options"
 
 	"github.com/peccancy/aliasb/internal/config"
 	"github.com/peccancy/aliasb/internal/connection"
 	"github.com/peccancy/aliasb/internal/handler"
 	"github.com/peccancy/aliasb/internal/hub"
 	"github.com/peccancy/aliasb/internal/service"
+	"github.com/peccancy/aliasb/internal/stats"
 	"github.com/peccancy/aliasb/internal/store"
 	"github.com/peccancy/aliasb/internal/words"
 )
@@ -49,11 +52,26 @@ func main() {
 	partnerClient := connection.NewPartnerClient(cfg.PartnerServiceURL)
 
 	roomStore := store.NewRoomStore(rdb, cfg.RoomTTLHours)
-	roomSvc := service.NewRoomService(roomStore, wordsSvc, partnerClient, cfg.PartnerID, cfg.PartnerAuthToken, log)
+	roomSvc := service.NewRoomService(roomStore, wordsSvc, partnerClient, cfg.PartnerID, cfg.PartnerSecret, log)
 	wsHub := hub.NewHub(log)
 
-	roomHandler := handler.NewRoomHandler(roomSvc, wsHub, log)
-	wsHandler := handler.NewWSHandler(wsHub, roomSvc, log)
+	// Connect to MongoDB for statistics (non-fatal if unavailable)
+	var statsStore *stats.Store
+	mongoCtx, mongoCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer mongoCancel()
+	mongoClient, err := mongo.Connect(mongoCtx, mongoopts.Client().ApplyURI(cfg.MongoURI))
+	if err != nil {
+		log.Warn().Err(err).Msg("mongodb unavailable, stats disabled")
+	} else if err := mongoClient.Ping(mongoCtx, nil); err != nil {
+		log.Warn().Err(err).Msg("mongodb ping failed, stats disabled")
+	} else {
+		statsStore = stats.NewStore(mongoClient, cfg.MongoDB)
+		log.Info().Str("db", cfg.MongoDB).Msg("mongodb connected")
+	}
+
+	roomHandler := handler.NewRoomHandler(roomSvc, wsHub, statsStore, log)
+	wsHandler := handler.NewWSHandler(wsHub, roomSvc, statsStore, log)
+	statusHandler := handler.NewStatusHandler(statsStore, log)
 
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -70,6 +88,7 @@ func main() {
 	r.Get("/api/v1/rooms/{id}", roomHandler.GetRoom)
 	r.Post("/api/v1/rooms/{id}/start", roomHandler.StartGame)
 	r.Get("/api/v1/rooms/{id}/ws", wsHandler.Handle)
+	r.Get("/status", statusHandler.Handle)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
 

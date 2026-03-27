@@ -15,6 +15,7 @@ import (
 	"github.com/peccancy/aliasb/internal/hub"
 	"github.com/peccancy/aliasb/internal/model"
 	"github.com/peccancy/aliasb/internal/service"
+	"github.com/peccancy/aliasb/internal/stats"
 )
 
 var upgrader = websocket.Upgrader{
@@ -26,11 +27,12 @@ var upgrader = websocket.Upgrader{
 type WSHandler struct {
 	hub   *hub.Hub
 	rooms *service.RoomService
+	stats *stats.Store
 	log   zerolog.Logger
 }
 
-func NewWSHandler(h *hub.Hub, rooms *service.RoomService, log zerolog.Logger) *WSHandler {
-	return &WSHandler{hub: h, rooms: rooms, log: log}
+func NewWSHandler(h *hub.Hub, rooms *service.RoomService, s *stats.Store, log zerolog.Logger) *WSHandler {
+	return &WSHandler{hub: h, rooms: rooms, stats: s, log: log}
 }
 
 type incomingMsg struct {
@@ -73,6 +75,15 @@ func (h *WSHandler) Handle(w http.ResponseWriter, r *http.Request) {
 
 	// Send current room state on connect
 	h.broadcastRoomState(roomID)
+
+	// If a round is active, send the current word to this client specifically
+	if room, err := h.rooms.GetRoom(r.Context(), roomID); err == nil {
+		if room.Status == model.StatusPlaying && room.CurrentRound != nil && !room.CurrentRound.Finished {
+			word := room.CurrentRound.CurrentWord()
+			payload, _ := json.Marshal(map[string]string{"word": word})
+			h.hub.SendToPlayer(roomID, clientID, hub.Message{Type: "current_word", Payload: payload})
+		}
+	}
 
 	// Write pump
 	go func() {
@@ -145,6 +156,7 @@ func (h *WSHandler) handleMessage(roomID string, data []byte) {
 				payload, _ := json.Marshal(map[string]interface{}{"winner": winner, "teams": gameRoom.Teams})
 				h.hub.BroadcastToRoom(roomID, hub.Message{Type: "game_over", Payload: payload})
 				go h.rooms.SetDisputeWinner(context.Background(), gameRoom)
+				h.recordFinished(roomID)
 			} else {
 				h.broadcastRoomState(roomID)
 			}
@@ -176,6 +188,7 @@ func (h *WSHandler) handleMessage(roomID string, data []byte) {
 			payload, _ := json.Marshal(map[string]interface{}{"winner": winner, "teams": gameRoom.Teams})
 			h.hub.BroadcastToRoom(roomID, hub.Message{Type: "game_over", Payload: payload})
 			go h.rooms.SetDisputeWinner(context.Background(), gameRoom)
+			h.recordFinished(roomID)
 		} else {
 			h.broadcastRoomState(roomID)
 		}
@@ -199,6 +212,7 @@ func (h *WSHandler) handleMessage(roomID string, data []byte) {
 		payload, _ := json.Marshal(map[string]interface{}{"winner": winner, "teams": room.Teams})
 		h.hub.BroadcastToRoom(roomID, hub.Message{Type: "game_over", Payload: payload})
 		go h.rooms.SetDisputeWinner(context.Background(), room)
+		h.recordFinished(roomID)
 
 	case "start_round":
 		gameRoom, err := h.rooms.StartNextRound(context.Background(), roomID)
@@ -223,4 +237,15 @@ func (h *WSHandler) broadcastRoomState(roomID string) {
 	}
 	payload, _ := json.Marshal(room)
 	h.hub.BroadcastToRoom(roomID, hub.Message{Type: "room_state", Payload: payload})
+}
+
+func (h *WSHandler) recordFinished(roomID string) {
+	if h.stats == nil {
+		return
+	}
+	go func() {
+		if err := h.stats.RecordGameFinished(context.Background(), roomID); err != nil {
+			h.log.Error().Err(err).Str("room_id", roomID).Msg("failed to record game finished")
+		}
+	}()
 }

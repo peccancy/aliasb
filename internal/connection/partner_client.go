@@ -3,10 +3,14 @@ package connection
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -41,15 +45,31 @@ type CreateDisputeResponse struct {
 	} `json:"data"`
 }
 
+// sign computes HMAC-SHA256 hex signature for a payload using the partner secret.
+func sign(payload, secret string) string {
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write([]byte(payload))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// setHMACHeaders sets X-Partner-ID, X-Partner-Timestamp, and X-Partner-Signature headers.
+func setHMACHeaders(req *http.Request, partnerID, signature string, ts int64) {
+	req.Header.Set("X-Partner-ID", partnerID)
+	req.Header.Set("X-Partner-Timestamp", strconv.FormatInt(ts, 10))
+	req.Header.Set("X-Partner-Signature", signature)
+}
+
 // StopBets stops betting on a dispute via the partner backend API.
-func (c *PartnerClient) StopBets(ctx context.Context, authToken, partnerID, disputeID string) error {
+// Signature payload: "{partner_id}:{dispute_id}:{timestamp}"
+func (c *PartnerClient) StopBets(ctx context.Context, partnerID, secret, disputeID string) error {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut,
 		c.baseURL+"/api/v1/partner/disputes/"+disputeID+"/stopbet", nil)
 	if err != nil {
 		return err
 	}
-	httpReq.Header.Set("Authorization", authToken)
-	httpReq.Header.Set("X-Partner-ID", partnerID)
+	ts := time.Now().Unix()
+	payload := fmt.Sprintf("%s:%s:%d", partnerID, disputeID, ts)
+	setHMACHeaders(httpReq, partnerID, sign(payload, secret), ts)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -64,14 +84,16 @@ func (c *PartnerClient) StopBets(ctx context.Context, authToken, partnerID, disp
 }
 
 // SetGameInProgress transitions a dispute to game_in_progress status via the partner backend API.
-func (c *PartnerClient) SetGameInProgress(ctx context.Context, authToken, partnerID, disputeID string) error {
+// Signature payload: "{partner_id}:{dispute_id}:{timestamp}"
+func (c *PartnerClient) SetGameInProgress(ctx context.Context, partnerID, secret, disputeID string) error {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPut,
 		c.baseURL+"/api/v1/partner/disputes/"+disputeID+"/startgame", nil)
 	if err != nil {
 		return err
 	}
-	httpReq.Header.Set("Authorization", authToken)
-	httpReq.Header.Set("X-Partner-ID", partnerID)
+	ts := time.Now().Unix()
+	payload := fmt.Sprintf("%s:%s:%d", partnerID, disputeID, ts)
+	setHMACHeaders(httpReq, partnerID, sign(payload, secret), ts)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -86,7 +108,8 @@ func (c *PartnerClient) SetGameInProgress(ctx context.Context, authToken, partne
 }
 
 // SetDisputeWinner sets the winner for a dispute via the partner backend API.
-func (c *PartnerClient) SetDisputeWinner(ctx context.Context, authToken, partnerID, disputeID, winnerTeamName string) error {
+// Signature payload: "{partner_id}:{dispute_id}:{winner_team_name}:{timestamp}"
+func (c *PartnerClient) SetDisputeWinner(ctx context.Context, partnerID, secret, disputeID, winnerTeamName string) error {
 	body, err := json.Marshal(map[string]string{"winner_team_name": winnerTeamName})
 	if err != nil {
 		return err
@@ -97,8 +120,9 @@ func (c *PartnerClient) SetDisputeWinner(ctx context.Context, authToken, partner
 		return err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", authToken)
-	httpReq.Header.Set("X-Partner-ID", partnerID)
+	ts := time.Now().Unix()
+	payload := fmt.Sprintf("%s:%s:%s:%d", partnerID, disputeID, winnerTeamName, ts)
+	setHMACHeaders(httpReq, partnerID, sign(payload, secret), ts)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -112,7 +136,9 @@ func (c *PartnerClient) SetDisputeWinner(ctx context.Context, authToken, partner
 	return nil
 }
 
-func (c *PartnerClient) CreateDispute(ctx context.Context, authToken, partnerID string, req CreateDisputeRequest) (string, error) {
+// CreateDispute creates a new dispute via the partner backend API.
+// Signature payload: "{partner_id}:{description}:{timestamp}"
+func (c *PartnerClient) CreateDispute(ctx context.Context, partnerID, secret string, req CreateDisputeRequest) (string, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return "", err
@@ -122,8 +148,9 @@ func (c *PartnerClient) CreateDispute(ctx context.Context, authToken, partnerID 
 		return "", err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", authToken)
-	httpReq.Header.Set("X-Partner-ID", partnerID)
+	ts := time.Now().Unix()
+	payload := fmt.Sprintf("%s:%s:%d", partnerID, req.Description, ts)
+	setHMACHeaders(httpReq, partnerID, sign(payload, secret), ts)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -131,8 +158,8 @@ func (c *PartnerClient) CreateDispute(ctx context.Context, authToken, partnerID 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("partner service returned status %d: %s", resp.StatusCode, string(body))
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("partner service returned status %d: %s", resp.StatusCode, string(b))
 	}
 	var result CreateDisputeResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
